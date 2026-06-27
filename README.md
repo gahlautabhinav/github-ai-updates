@@ -1,71 +1,122 @@
-# Personal AI-Repo Tracker → Obsidian
+# 🛰️ AI Repo Tracker → Obsidian
 
-Daily digest of trending + fastest-growing AI GitHub repos, written straight
-into your Obsidian vault. stdlib-only Python, no `pip install`.
+A personal, self-hosted **daily digest of trending and fastest-growing AI GitHub repos**, written straight into an Obsidian vault as a styled "console" dashboard. Keep your finger on the pulse of new AI tools — go to the source instead of waiting for the downstream videos.
 
-## What it produces (in `<vault>/AI Repos/`)
+stdlib-only Python. No `pip install`. No external services. The only thing that touches the network is the GitHub REST API.
 
-- `Daily/YYYY-MM-DD.md` — dashboard note with 4 tables:
-  - 🔥 Top 10 trending created **this week** (by stars)
-  - 📅 Top 5 trending created **this month**
-  - ⚡ Top 10 fastest growing **last 24h** (star delta)
-  - 📈 Top 10 fastest growing **last 30 days**
-- `Repos/owner__name.md` — one note per surfaced repo, with frontmatter,
-  description, GitHub link, and a star-history table. Wikilinked from the
-  daily note so it grows your graph over time.
+> Inspired by a YouTuber's morning-automation idea, rebuilt as a personal tool with an Obsidian-native UI and Claude-written video-idea summaries.
 
-Star counts for a wider universe are stored in `snapshots.db` (SQLite) so the
-growth lists can be diffed across days. **24h list needs ≥2 daily runs; 30d
-list fills in over ~a month.**
+---
 
-## Setup (2 min)
+## What it produces
 
-1. **GitHub token** (5000 req/hr): https://github.com/settings/tokens →
-   "Generate new token (classic)" → no scopes needed for public search → copy.
-2. `copy config.example.json config.json` then edit `config.json`
-   (it's gitignored — your token stays local, never pushed):
-   - `vault_path` → absolute path to your Obsidian vault, e.g.
-     `C:/Users/abhin/Documents/MyVault`
-   - `github_token` → paste the token (or leave it and set env var
-     `GITHUB_TOKEN` instead — env wins, keeps token out of the file)
-   - `topics` → tune what "AI" means to you (default = broad AI)
-3. Test run:
+Every morning, in `<vault>/AI Repos/`:
+
+| Note | Contents |
+|------|----------|
+| `Daily/YYYY-MM-DD.md` | Dashboard with 4 ranked tables (below) + a Claude `## TL;DR — video ideas` section |
+| `Repos/owner__name.md` | One note per surfaced repo: description, GitHub link, topics, and a growing star-history table |
+
+The dashboard's four lists:
+
+- 🔥 **Top 10 trending — created this week** (by stars)
+- 📅 **Top 5 trending — created this month**
+- ⚡ **Top 10 fastest growing — last 24h** (star velocity)
+- 📈 **Top 10 fastest growing — last 30 days**
+
+Notes are wikilinked into your Obsidian graph and carry `cssclasses` so a bundled CSS snippet renders them as a dark, data-forward dashboard. **View in Reading mode (`Ctrl+E`) for the full look.**
+
+> ⏳ The two **growth** lists need accrued history: the 24h list appears after the 2nd daily run, the 30d list fills in over ~a month. Trending lists work on day 1.
+
+---
+
+## How it works
+
+```
+GitHub Search API ──► merge/dedupe across AI topics ──► snapshots.db (SQLite)
+                                                              │
+                          ┌───────────────────────────────────┤
+                  trending (created in window)        growth (diff today vs prior snapshot)
+                          └───────────────────┬───────────────┘
+                                              ▼
+                       Markdown notes + per-repo notes  ──►  Obsidian vault
+                                              │
+                                  optional: claude -p  ──►  TL;DR appended
+```
+
+- **Trending** = repos *created* in the window, ranked by stars (new & hot).
+- **Growth** = star velocity for repos of *any* age (catches old repos that suddenly take off) — computed by diffing today's star counts against an earlier daily snapshot stored in SQLite.
+- **Styling** = a CSS snippet auto-written to `<vault>/.obsidian/snippets/ai-repos.css` and auto-enabled.
+
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full design.
+
+---
+
+## Quick start
+
+1. **GitHub token** (lifts the rate limit to 5000/hr): https://github.com/settings/tokens → *Generate new token (classic)* → **check no scopes** (public search needs none) → copy.
+2. `copy config.example.json config.json`, then edit `config.json`:
+   - `vault_path` → absolute path to your Obsidian vault
+   - `github_token` → paste the token (or set env var `GITHUB_TOKEN` — it wins over the file)
+   - `topics` → tune what "AI" means to you
+3. First run:
    ```
    py -3.10 github_ai_tracker.py
    ```
-   Check `<vault>/AI Repos/Daily/` for today's note.
+   Open `<vault>/AI Repos/Daily/` in Obsidian (Reading view).
 
-## Schedule it every morning (Windows Task Scheduler)
+`config.json`, `snapshots.db`, and the vault are gitignored — your token never leaves your machine.
 
-1. Open **Task Scheduler** → **Create Basic Task**.
-2. Name: `AI Repo Tracker`. Trigger: **Daily**, time `08:00`.
-3. Action: **Start a program** → Program/script: browse to
-   `D:\Agents_learn\github_ai_tool\run_daily.bat`.
-4. Finish. (In task properties tick "Run whether user is logged on or not" if
-   you want it to fire while logged out.)
+---
 
-Logs append to `run.log`.
+## Run it every morning (Windows Task Scheduler)
 
-## Optional: Claude-written TL;DR (for video ideas)
+One command creates the daily job (no GUI):
 
-Set `"claude_summary": true` in `config.json`. After the data run, the script
-calls your local Claude CLI to append a `## TL;DR — video ideas` section to the
-daily note (most notable repos, why a creator should care, what's testable).
-Off by default so first runs are fast and pure-data; flip it on when ready.
+```
+schtasks /create /tn "AI Repo Tracker" /tr "<repo>\run_daily.bat" /sc daily /st 08:00 /f
+```
+
+Optionally make it catch up if the laptop was off at 8am:
+
+```powershell
+$s=(Get-ScheduledTask -TaskName 'AI Repo Tracker').Settings; $s.StartWhenAvailable=$true; Set-ScheduledTask -TaskName 'AI Repo Tracker' -Settings $s
+```
+
+The job is **local** — the laptop must be on (or get turned on later that day, thanks to catch-up). A cloud schedule can't reach a local vault. Logs append to `run.log`.
+
+---
+
+## Configuration (`config.json`)
+
+| Key | Meaning |
+|-----|---------|
+| `vault_path` | Absolute path to your Obsidian vault |
+| `subfolder` | Folder inside the vault for output (default `AI Repos`) |
+| `github_token` | GitHub PAT (or use `GITHUB_TOKEN` env var) |
+| `topics` | GitHub topics treated as "AI" |
+| `trending_week_count` / `trending_month_count` | Sizes of the trending lists |
+| `growth_24h_count` / `growth_30d_count` | Sizes of the growth lists |
+| `universe_per_topic` | How many top repos per topic to snapshot for growth tracking |
+| `min_stars_universe` | Floor for the snapshot universe |
+| `claude_summary` | `true` → append a Claude-written TL;DR via the local `claude` CLI |
+
+---
 
 ## Self-check
 
 ```
 py -3.10 github_ai_tracker.py --selftest
 ```
-Verifies the growth-diff + ranking logic on fake data.
 
-## Notes / ceilings
+Verifies the growth-diff + ranking logic on fixture data.
 
-- Trending = repos *created* in the window, ranked by stars (matches "new and
-  hot"). Growth = star velocity for *any* age repo (catches old repos that
-  suddenly take off).
-- Search API merges ~8 topic queries with a 2s throttle → a run takes ~1–2 min.
-- Want a cloud Claude Max routine instead of Task Scheduler? Only works if your
-  vault is a **git repo** (Obsidian Git plugin); the cloud agent can't touch a
-  local-only `D:\` vault.
+---
+
+## Tech
+
+- **Python 3.10**, standard library only (`urllib`, `sqlite3`, `subprocess`, `json`).
+- **GitHub REST Search API** for data (not the `gh` CLI).
+- **SQLite** (`snapshots.db`) for star history.
+- **Obsidian** for the UI (markdown + a CSS snippet).
+- **Claude CLI** (optional) for the TL;DR.

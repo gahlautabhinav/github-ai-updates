@@ -59,11 +59,21 @@ CSS_SNIPPET = r"""/* ===========================================================
   -webkit-font-smoothing: antialiased;
 }
 
+/* let the dashboard use full width (override Obsidian readable-line-length) */
 .ai-digest .markdown-preview-sizer,
-.ai-repo  .markdown-preview-sizer { padding-block: 2.2rem; }
+.ai-repo  .markdown-preview-sizer {
+  max-width: none !important; padding: 2.2rem 2.6rem;
+}
 
 /* hide the redundant filename inline-title; the banner h1 carries it */
 .ai-digest .inline-title, .ai-repo .inline-title { display: none; }
+
+/* hide the frontmatter Properties block on the dashboard for a clean console look */
+.ai-digest .metadata-container, .ai-repo .metadata-container { display: none !important; }
+
+/* widen Live Preview too (Reading view handled via .markdown-preview-sizer above) */
+.markdown-source-view.ai-digest .cm-sizer,
+.markdown-source-view.ai-repo  .cm-sizer { max-width: none !important; }
 
 /* banner title */
 .ai-digest h1, .ai-repo h1 {
@@ -113,22 +123,19 @@ CSS_SNIPPET = r"""/* ===========================================================
 }
 .ai-digest tbody td:nth-child(3) {
   color: var(--air-star); font-variant-numeric: tabular-nums;
-  text-align: right; white-space: nowrap;
+  text-align: right; white-space: nowrap !important;
 }
 .ai-digest tbody td:nth-child(3):not(:empty)::before { content: "\2605\00a0"; }
-.ai-digest tbody td:nth-child(4) {
+.ai-digest tbody td:nth-child(4) {  /* Δ — literal ▲ comes from the row text, only on growth */
   color: var(--air-grow); font-weight: 650;
   font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap;
 }
-.ai-digest tbody td:nth-child(4):not(:empty)::before {
-  content: "\25B2\00a0"; font-size: 0.78em;
-}
-.ai-digest tbody td:nth-child(5) { color: var(--air-muted); font-size: 0.82rem; }
+.ai-digest tbody td:nth-child(5) { color: var(--air-muted); font-size: 0.82rem; white-space: nowrap; }
 .ai-digest tbody td:nth-child(6) {
   color: var(--air-faint); font-size: 0.82rem;
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.ai-digest tbody td:nth-child(7) { color: var(--air-muted); }
+.ai-digest tbody td:nth-child(7) { color: var(--air-muted); max-width: 42ch; }
 
 /* repo-note star history:  1=Day  2=Stars */
 .ai-repo tbody td:nth-child(1) {
@@ -150,6 +157,26 @@ CSS_SNIPPET = r"""/* ===========================================================
   border: none; background: var(--air-surface); border-radius: 8px;
   padding: 0.9rem 1.1rem; margin: 0 0 1.2rem; color: var(--air-ink); font-style: normal;
 }
+.ai-repo strong { color: var(--air-star); font-weight: 700; }  /* the ★ stat line */
+.ai-repo a { color: var(--air-link); text-decoration: none; }
+.ai-repo a:hover { text-decoration: underline; }
+.ai-repo h2 {
+  display: flex; align-items: center; gap: 0.55rem;
+  font-size: 0.95rem; font-weight: 650; color: var(--air-ink);
+  margin: 1.8rem 0 0.5rem; padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--air-border);
+}
+.ai-repo h2::before {
+  content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--air-star);
+}
+/* the GitHub link rendered as a quiet button */
+.ai-repo p > a[href^="http"] {
+  display: inline-block; margin: 0.1rem 0 0.5rem; padding: 0.35rem 0.8rem;
+  border: 1px solid var(--air-border); border-radius: 7px;
+  color: var(--air-link); font-size: 0.85rem;
+}
+.ai-repo p > a[href^="http"]:hover { border-color: var(--air-link); text-decoration: none; }
 """
 
 
@@ -350,7 +377,8 @@ def safe_name(full_name):
 
 
 def wikilink(full_name):
-    return f"[[{safe_name(full_name)}|{full_name}]]"
+    # escape the pipe so the alias separator isn't read as a table-cell delimiter
+    return f"[[{safe_name(full_name)}\\|{full_name}]]"
 
 
 def trunc(text, n=140):
@@ -381,7 +409,7 @@ def growth_table(repos):
              "|--:|------|------:|--:|------|---------|------------|"]
     for i, r in enumerate(repos, 1):
         lines.append(
-            f"| {i} | {wikilink(r['full_name'])} | {r['stars']} | +{r['delta']} | "
+            f"| {i} | {wikilink(r['full_name'])} | {r['stars']} | ▲ +{r['delta']} | "
             f"{r['language'] or '—'} | {r['created_at']} | {trunc(r['description'])} |"
         )
     return "\n".join(lines) + "\n"
@@ -449,11 +477,11 @@ def write_repo_note(conn, base, r, today):
         f"created: {r['created_at']}\nlanguage: {r['language']}\n"
         f"topics: [{', '.join(topics)}]\nupdated: {today}\ntags: [ai-repo]\n---\n\n"
         f"# {full_name}\n\n"
-        f"> {trunc(r['description'], 400) or '_no description_'}\n\n"
-        f"\U0001f517 {r['html_url']}\n\n"
-        f"**Stars:** {r.get('stars', '?')} · **Created:** {r['created_at']} "
-        f"· **Language:** {r['language'] or 'n/a'}\n\n"
-        f"## Star history (last 14 snapshots)\n\n{hist_tbl}\n"
+        f"> {trunc(r['description'], 400) or 'no description'}\n\n"
+        f"**★ {r.get('stars', '?')}**  ·  {r['language'] or '—'}  ·  created {r['created_at']}\n\n"
+        f"[Open on GitHub →]({r['html_url']})\n\n"
+        + (f"Topics — {' · '.join(topics)}\n\n" if topics else "")
+        + f"## Star history (last 14 snapshots)\n\n{hist_tbl}\n"
     )
     with open(path, "w", encoding="utf-8") as f:
         f.write(body)

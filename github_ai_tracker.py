@@ -34,6 +34,156 @@ DB_PATH = os.path.join(HERE, "snapshots.db")
 API = "https://api.github.com/search/repositories"
 SEARCH_DELAY = 2.0  # seconds between search calls (search has a tight rate limit)
 
+# Console-dashboard styling. Written to <vault>/.obsidian/snippets/ and applied
+# only to notes carrying  cssclasses: [ai-digest] / [ai-repo].  raw string so the
+# CSS unicode escapes (\2605 etc) survive into the file verbatim.
+CSS_SNIPPET = r"""/* ============================================================
+   AI Repos — dark console dashboard for the daily digest.
+   Auto-written + auto-enabled by github_ai_tracker.py.
+   Scoped to notes with  cssclasses: [ai-digest] / [ai-repo].
+   ============================================================ */
+
+.ai-digest, .ai-repo {
+  --air-bg:      oklch(0.165 0.012 264);
+  --air-surface: oklch(0.225 0.016 264);
+  --air-ink:     oklch(0.945 0.008 264);
+  --air-muted:   oklch(0.760 0.012 264);
+  --air-faint:   oklch(0.620 0.012 264);
+  --air-border:  oklch(0.315 0.012 264);
+  --air-link:    oklch(0.820 0.105 232);
+  --air-star:    oklch(0.845 0.130 86);
+  --air-grow:    oklch(0.820 0.150 152);
+
+  background: var(--air-bg);
+  color: var(--air-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+.ai-digest .markdown-preview-sizer,
+.ai-repo  .markdown-preview-sizer { padding-block: 2.2rem; }
+
+/* hide the redundant filename inline-title; the banner h1 carries it */
+.ai-digest .inline-title, .ai-repo .inline-title { display: none; }
+
+/* banner title */
+.ai-digest h1, .ai-repo h1 {
+  font-weight: 700; letter-spacing: -0.02em; color: var(--air-ink);
+  margin: 0 0 1.4rem; text-wrap: balance;
+}
+.ai-digest h1 { font-size: 1.65rem; }
+.ai-repo  h1 { font-size: 1.4rem; margin-bottom: 0.6rem; }
+
+/* section headers: accent dot + hairline, sentence case (no eyebrow scaffold) */
+.ai-digest h2 {
+  display: flex; align-items: center; gap: 0.55rem;
+  font-size: 0.98rem; font-weight: 650; letter-spacing: -0.01em;
+  color: var(--air-ink); margin: 2.1rem 0 0.55rem;
+  padding-bottom: 0.5rem; border-bottom: 1px solid var(--air-border);
+}
+.ai-digest h2::before {
+  content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--air-link);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--air-link) 22%, transparent);
+}
+
+/* data tables */
+.ai-digest table, .ai-repo table {
+  width: 100%; border-collapse: collapse; margin: 0.2rem 0 0.4rem; font-size: 0.9rem;
+}
+.ai-digest thead th, .ai-repo thead th {
+  text-align: left; padding: 0 0.7rem 0.55rem; border: none;
+  font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--air-faint);
+}
+.ai-digest tbody td, .ai-repo tbody td {
+  padding: 0.62rem 0.7rem; border: none; border-top: 1px solid var(--air-border);
+  color: var(--air-muted); vertical-align: baseline;
+}
+.ai-digest tbody tr:hover td, .ai-repo tbody tr:hover td { background: var(--air-surface); }
+.ai-digest tbody td:nth-child(2) a {
+  color: var(--air-link); font-weight: 600; text-decoration: none;
+}
+.ai-digest tbody td:nth-child(2) a:hover { text-decoration: underline; }
+
+/* column coloring (pure-markdown tables, so wikilinks still resolve).
+   digest columns:  1=#  2=Repo  3=Stars  4=Δ  5=Lang  6=Created  7=What */
+.ai-digest tbody td:nth-child(1) {
+  color: var(--air-faint); font-weight: 600;
+  font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap;
+}
+.ai-digest tbody td:nth-child(3) {
+  color: var(--air-star); font-variant-numeric: tabular-nums;
+  text-align: right; white-space: nowrap;
+}
+.ai-digest tbody td:nth-child(3):not(:empty)::before { content: "\2605\00a0"; }
+.ai-digest tbody td:nth-child(4) {
+  color: var(--air-grow); font-weight: 650;
+  font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap;
+}
+.ai-digest tbody td:nth-child(4):not(:empty)::before {
+  content: "\25B2\00a0"; font-size: 0.78em;
+}
+.ai-digest tbody td:nth-child(5) { color: var(--air-muted); font-size: 0.82rem; }
+.ai-digest tbody td:nth-child(6) {
+  color: var(--air-faint); font-size: 0.82rem;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.ai-digest tbody td:nth-child(7) { color: var(--air-muted); }
+
+/* repo-note star history:  1=Day  2=Stars */
+.ai-repo tbody td:nth-child(1) {
+  color: var(--air-faint); font-variant-numeric: tabular-nums;
+}
+.ai-repo tbody td:nth-child(2) {
+  color: var(--air-star); font-variant-numeric: tabular-nums; text-align: right;
+}
+.ai-repo tbody td:nth-child(2)::before { content: "\2605\00a0"; }
+
+/* empty state + footer */
+.ai-digest p em { color: var(--air-faint); font-style: normal; }
+.ai-digest hr, .ai-repo hr {
+  border: none; border-top: 1px solid var(--air-border); margin: 2rem 0 1rem;
+}
+
+/* repo note: description as a clean panel (no side-stripe) */
+.ai-repo blockquote {
+  border: none; background: var(--air-surface); border-radius: 8px;
+  padding: 0.9rem 1.1rem; margin: 0 0 1.2rem; color: var(--air-ink); font-style: normal;
+}
+"""
+
+
+def ensure_obsidian_theme(vault_path):
+    """Write the CSS snippet and best-effort auto-enable it in the vault."""
+    obs = os.path.join(vault_path, ".obsidian")
+    snippets = os.path.join(obs, "snippets")
+    os.makedirs(snippets, exist_ok=True)
+    css_path = os.path.join(snippets, "ai-repos.css")
+    old = ""
+    if os.path.exists(css_path):
+        with open(css_path, "r", encoding="utf-8") as f:
+            old = f.read()
+    if old != CSS_SNIPPET:
+        with open(css_path, "w", encoding="utf-8") as f:
+            f.write(CSS_SNIPPET)
+        print("  wrote CSS snippet -> .obsidian/snippets/ai-repos.css")
+    # auto-enable in appearance.json, preserving any existing keys
+    app_path = os.path.join(obs, "appearance.json")
+    try:
+        data = {}
+        if os.path.exists(app_path):
+            with open(app_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        enabled = data.get("enabledCssSnippets", [])
+        if "ai-repos" not in enabled:
+            enabled.append("ai-repos")
+            data["enabledCssSnippets"] = enabled
+            with open(app_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            print("  enabled snippet in appearance.json")
+    except Exception as e:  # ponytail: nice-to-have; user can toggle it manually
+        print(f"  (enable 'ai-repos' yourself in Settings > Appearance > CSS snippets: {e})")
+
 
 # ---------------------------------------------------------------- config / db
 def load_config():
@@ -204,32 +354,35 @@ def wikilink(full_name):
 
 
 def trunc(text, n=140):
-    text = " ".join((text or "").split())
+    # replace pipes -> table cells would break on them
+    text = " ".join((text or "").replace("|", "/").split())
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
 def trending_table(repos):
     if not repos:
-        return "_No repos found for this window._\n"
-    lines = ["| # | Repo | ⭐ | Created | Lang | Description |",
-             "|---|------|----|---------|------|-------------|"]
+        return "_No new repos in this window._\n"
+    # uniform 7-col shape (Δ blank here) so CSS column coloring matches growth tables
+    lines = ["| # | Repo | Stars | Δ | Lang | Created | What it is |",
+             "|--:|------|------:|--:|------|---------|------------|"]
     for i, r in enumerate(repos, 1):
         lines.append(
-            f"| {i} | {wikilink(r['full_name'])} | {r['stars']} | "
-            f"{r['created_at']} | {r['language']} | {trunc(r['description'])} |"
+            f"| {i} | {wikilink(r['full_name'])} | {r['stars']} |  | "
+            f"{r['language'] or '—'} | {r['created_at']} | {trunc(r['description'])} |"
         )
     return "\n".join(lines) + "\n"
 
 
 def growth_table(repos):
     if not repos:
-        return "_Not enough snapshot history yet — fills in as the tracker runs daily._\n"
-    lines = ["| # | Repo | +⭐ | Now | Created | Lang | Description |",
-             "|---|------|-----|-----|---------|------|-------------|"]
+        return ("_Not enough history yet — this list fills in as the tracker "
+                "runs each day._\n")
+    lines = ["| # | Repo | Stars | Δ | Lang | Created | What it is |",
+             "|--:|------|------:|--:|------|---------|------------|"]
     for i, r in enumerate(repos, 1):
         lines.append(
-            f"| {i} | {wikilink(r['full_name'])} | +{r['delta']} | {r['stars']} | "
-            f"{r['created_at']} | {r['language']} | {trunc(r['description'])} |"
+            f"| {i} | {wikilink(r['full_name'])} | {r['stars']} | +{r['delta']} | "
+            f"{r['language'] or '—'} | {r['created_at']} | {trunc(r['description'])} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -239,13 +392,14 @@ def write_daily_note(base, today, week, month, g24, g30):
     os.makedirs(daily_dir, exist_ok=True)
     path = os.path.join(daily_dir, f"{today}.md")
     body = (
-        f"---\ntype: ai-repo-digest\ndate: {today}\ntags: [ai-repos, digest]\n---\n\n"
-        f"# AI GitHub Repos — {today}\n\n"
-        f"## \U0001f525 Trending created this week\n\n{trending_table(week)}\n"
-        f"## \U0001f4c5 Trending created this month\n\n{trending_table(month)}\n"
-        f"## ⚡ Fastest growing — last 24h\n\n{growth_table(g24)}\n"
-        f"## \U0001f4c8 Fastest growing — last 30 days\n\n{growth_table(g30)}\n"
-        f"---\n*Generated by personal-ai-repo-tracker at "
+        f"---\ncssclasses: [ai-digest]\ntype: ai-repo-digest\ndate: {today}\n"
+        f"tags: [ai-repos, digest]\n---\n\n"
+        f"# AI GitHub Repos · {today}\n\n"
+        f"## Trending · created this week\n\n{trending_table(week)}\n"
+        f"## Trending · created this month\n\n{trending_table(month)}\n"
+        f"## Fastest growing · last 24 hours\n\n{growth_table(g24)}\n"
+        f"## Fastest growing · last 30 days\n\n{growth_table(g30)}\n"
+        f"---\n*Generated by personal-ai-repo-tracker · "
         f"{datetime.now().strftime('%Y-%m-%d %H:%M')}*\n"
     )
     with open(path, "w", encoding="utf-8") as f:
@@ -281,7 +435,7 @@ def write_repo_note(conn, base, r, today):
         "(SELECT repo_id FROM repos WHERE full_name=?) ORDER BY day DESC LIMIT 14",
         (full_name,),
     ).fetchall()
-    hist_tbl = "| Day | ⭐ |\n|-----|----|\n" + "\n".join(
+    hist_tbl = "| Day | Stars |\n|-----|------:|\n" + "\n".join(
         f"| {d} | {s} |" for d, s in hist
     )
     topics = r.get("topics")
@@ -290,7 +444,8 @@ def write_repo_note(conn, base, r, today):
     topics = topics or []
 
     body = (
-        f"---\nrepo: {full_name}\nurl: {r['html_url']}\nstars: {r.get('stars', '')}\n"
+        f"---\ncssclasses: [ai-repo]\nrepo: {full_name}\nurl: {r['html_url']}\n"
+        f"stars: {r.get('stars', '')}\n"
         f"created: {r['created_at']}\nlanguage: {r['language']}\n"
         f"topics: [{', '.join(topics)}]\nupdated: {today}\ntags: [ai-repo]\n---\n\n"
         f"# {full_name}\n\n"
@@ -315,6 +470,7 @@ def run():
 
     base = os.path.join(cfg["vault_path"], cfg["subfolder"])
     os.makedirs(base, exist_ok=True)
+    ensure_obsidian_theme(cfg["vault_path"])
     today = date.today().isoformat()
     wk = (date.today() - timedelta(days=7)).isoformat()
     mo = (date.today() - timedelta(days=30)).isoformat()

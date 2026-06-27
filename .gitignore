@@ -10,6 +10,9 @@ run.log
 __pycache__/
 *.pyc
 
+# generated Obsidian vault (your personal data, lives local only)
+github-ai-tools-vault/
+
 # local test artifacts
 TestVault/
 .venv/

@@ -62,6 +62,36 @@ def db_connect():
 
 
 # --------------------------------------------------------------- github calls
+def _get_json(url, token, query, page, retries=4):
+    """One GET with retry on transient network errors + rate-limit backoff."""
+    for attempt in range(1, retries + 1):
+        req = urllib.request.Request(url)
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("User-Agent", "personal-ai-repo-tracker")
+        if token and not token.startswith("PUT_YOUR"):
+            req.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):  # rate limited (primary or secondary)
+                wait = int(e.headers.get("Retry-After", "60"))
+                print(f"  rate limited on '{query}' p{page} -> sleeping {wait}s")
+                time.sleep(wait)
+                continue
+            print(f"  HTTP {e.code} on '{query}': {e.reason}")
+            return None
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            wait = 5 * attempt  # transient: timeout / DNS / dropped connection
+            reason = getattr(e, "reason", e)
+            print(f"  net error on '{query}' p{page} "
+                  f"(try {attempt}/{retries}): {reason} -> retry in {wait}s")
+            time.sleep(wait)
+            continue
+    print(f"  gave up on '{query}' p{page} after {retries} tries")
+    return None
+
+
 def gh_search(query, token, sort="stars", order="desc", per_page=30, pages=1):
     """Return a list of repo item dicts for a search query (paginated, throttled)."""
     items = []
@@ -70,23 +100,8 @@ def gh_search(query, token, sort="stars", order="desc", per_page=30, pages=1):
             {"q": query, "sort": sort, "order": order,
              "per_page": per_page, "page": page}
         )
-        req = urllib.request.Request(f"{API}?{qs}")
-        req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("User-Agent", "personal-ai-repo-tracker")
-        if token and not token.startswith("PUT_YOUR"):
-            req.add_header("Authorization", f"Bearer {token}")
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            # 403 = rate limited (primary or secondary). Back off once, then give up.
-            if e.code in (403, 429):
-                wait = int(e.headers.get("Retry-After", "60"))
-                print(f"  rate limited on '{query}' p{page} -> sleeping {wait}s")
-                time.sleep(wait)
-                time.sleep(SEARCH_DELAY)
-                continue
-            print(f"  HTTP {e.code} on '{query}': {e.reason}")
+        data = _get_json(f"{API}?{qs}", token, query, page)
+        if data is None:
             break
         batch = data.get("items", [])
         items.extend(batch)

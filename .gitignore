@@ -1,0 +1,15 @@
+# secrets / local config (holds your GitHub token + vault path)
+config.json
+.env
+
+# generated data + logs
+snapshots.db
+run.log
+
+# python
+__pycache__/
+*.pyc
+
+# local test artifacts
+TestVault/
+.venv/

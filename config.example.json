@@ -1,0 +1,22 @@
+{
+  "vault_path": "PUT_YOUR_OBSIDIAN_VAULT_PATH_HERE",
+  "subfolder": "AI Repos",
+  "github_token": "PUT_YOUR_GITHUB_TOKEN_HERE_OR_USE_ENV",
+  "topics": [
+    "ai",
+    "llm",
+    "machine-learning",
+    "agents",
+    "deep-learning",
+    "generative-ai",
+    "rag",
+    "llmops"
+  ],
+  "trending_week_count": 10,
+  "trending_month_count": 5,
+  "growth_24h_count": 10,
+  "growth_30d_count": 10,
+  "universe_per_topic": 90,
+  "min_stars_universe": 50,
+  "claude_summary": false
+}

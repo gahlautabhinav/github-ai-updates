@@ -436,19 +436,35 @@ def write_daily_note(base, today, week, month, g24, g30):
 
 
 def maybe_claude_summary(daily_path, cfg):
-    """If enabled, ask the local Claude CLI to append a video-idea TL;DR."""
+    """If enabled, have the local Claude CLI write a video-idea TL;DR.
+
+    Claude only GENERATES the text (print mode can't reliably edit files);
+    Python appends it. Best-effort — never fails the data run.
+    """
     if not cfg.get("claude_summary"):
         return
+    with open(daily_path, "r", encoding="utf-8") as f:
+        note = f.read()
     prompt = (
-        f"Read the file '{daily_path}'. Append a '## TL;DR — video ideas' section "
-        f"at the end: 4-6 bullets on the most notable repos in it and why a content "
-        f"creator should care / what's testable. Edit the file in place, keep it tight."
+        "Below is today's AI GitHub repo digest. Write a tight TL;DR for a content "
+        "creator: 4-6 markdown bullets naming the most notable repos and why they "
+        "matter / what's testable for a video. Output ONLY the bullet lines (start "
+        "each with '- '), no preamble, no heading.\n\n" + note
     )
     print("Generating Claude summary...")
     try:
-        # shell=True so Windows resolves the `claude` / `claude.cmd` launcher
-        subprocess.run(f'claude -p "{prompt}"', shell=True, timeout=300, check=False)
-    except Exception as e:  # ponytail: summary is a nice-to-have, never fail the run over it
+        # prompt via stdin so the long note isn't shell-escaped; shell=True resolves claude.cmd
+        res = subprocess.run("claude -p", shell=True, input=prompt,
+                             capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=300)
+        out = (res.stdout or "").strip()
+        if out:
+            with open(daily_path, "a", encoding="utf-8") as f:
+                f.write("\n## TL;DR — video ideas\n\n" + out + "\n")
+            print("  appended TL;DR")
+        else:
+            print(f"  no summary returned (claude unavailable?); skipped. {res.stderr[:120]}")
+    except Exception as e:  # ponytail: nice-to-have, never break the data run over it
         print(f"  summary step skipped: {e}")
 
 

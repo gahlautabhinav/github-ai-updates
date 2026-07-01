@@ -71,19 +71,39 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full design.
 
 ## Run it every morning (Windows Task Scheduler)
 
-One command creates the daily job (no GUI):
+Create the daily job (no GUI):
 
 ```
 schtasks /create /tn "AI Repo Tracker" /tr "<repo>\run_daily.bat" /sc daily /st 08:00 /f
 ```
 
-Optionally make it catch up if the laptop was off at 8am:
+**On a laptop you must harden it**, or the run gets killed on battery or when the
+machine wakes from sleep at 8am — the task exits `0xC000013A` and you lose the day.
+Run once in an **Administrator** PowerShell:
 
 ```powershell
-$s=(Get-ScheduledTask -TaskName 'AI Repo Tracker').Settings; $s.StartWhenAvailable=$true; Set-ScheduledTask -TaskName 'AI Repo Tracker' -Settings $s
+# run detached from the console (survive logoff/sleep) + allow battery + catch-up
+$p = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType S4U -RunLevel Limited
+$s = New-ScheduledTaskSettingsSet -StartWhenAvailable
+$s.DisallowStartIfOnBatteries = $false
+$s.StopIfGoingOnBatteries = $false
+Set-ScheduledTask -TaskName 'AI Repo Tracker' -Principal $p -Settings $s
 ```
 
-The job is **local** — the laptop must be on (or get turned on later that day, thanks to catch-up). A cloud schedule can't reach a local vault. Logs append to `run.log`.
+Why each part matters:
+- **S4U principal** — runs with no console, so a Ctrl+C sent during a sleep/wake or
+  logoff transition can't reach it (the main cause of missed days).
+- **battery flags** — Task Scheduler otherwise refuses to start (or stops) the task
+  on battery power.
+- **StartWhenAvailable** — if the laptop was off at 8am, it catches up when powered on.
+
+`run_daily.bat` also launches Python in its own process group as a second layer of
+protection against console-teardown kills.
+
+The job is **local** — the laptop must be on (or get turned on later that day). A
+cloud schedule can't reach a local vault. Logs append to `run.log`; a missed day
+can't be backfilled (that day's star snapshot is never captured), but growth
+self-heals from the next run.
 
 ---
 

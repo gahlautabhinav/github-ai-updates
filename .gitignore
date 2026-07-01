@@ -16,3 +16,6 @@ github-ai-tools-vault/
 # local test artifacts
 TestVault/
 .venv/
+
+# local dev tools
+*-resume.txt

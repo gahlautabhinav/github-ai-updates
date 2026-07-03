@@ -18,5 +18,20 @@
   "growth_30d_count": 10,
   "universe_per_topic": 90,
   "min_stars_universe": 50,
-  "claude_summary": false
+  "claude_summary": false,
+
+  "filter_noise": true,
+  "exclude_topics": ["awesome", "awesome-list", "awesome-lists"],
+  "trending_rank": "momentum",
+
+  "new_on_radar_count": 10,
+  "breakout_count": 10,
+  "breakout_min_delta": 200,
+  "breakout_min_age_days": 45,
+  "watchlist": [],
+
+  "enrich_repo_notes": true,
+  "weekly_note": true,
+  "home_note": true,
+  "sparklines": true
 }

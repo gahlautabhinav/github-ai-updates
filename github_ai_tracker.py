@@ -17,6 +17,7 @@ Usage:
   py -3.10 github_ai_tracker.py --selftest # run the growth-diff self-check
 """
 
+import base64
 import json
 import os
 import sqlite3
@@ -32,7 +33,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 DB_PATH = os.path.join(HERE, "snapshots.db")
 API = "https://api.github.com/search/repositories"
+REPO_API = "https://api.github.com/repos/"
 SEARCH_DELAY = 2.0  # seconds between search calls (search has a tight rate limit)
+DEFAULT_EXCLUDE_TOPICS = {"awesome", "awesome-list", "awesome-lists"}
+EMPTY_WATCH = "_Watchlist empty._\n"
 
 # Console-dashboard styling. Written to <vault>/.obsidian/snippets/ and applied
 # only to notes carrying  cssclasses: [ai-digest] / [ai-repo].  raw string so the
@@ -234,13 +238,21 @@ def db_connect():
             repo_id INTEGER, day TEXT, stars INTEGER,
             PRIMARY KEY(repo_id, day))"""
     )
+    # migration: first_seen = the day a repo first entered our tracking
+    cols = [c[1] for c in conn.execute("PRAGMA table_info(repos)").fetchall()]
+    if "first_seen" not in cols:
+        conn.execute("ALTER TABLE repos ADD COLUMN first_seen TEXT")
     conn.commit()
     return conn
 
 
 # --------------------------------------------------------------- github calls
-def _get_json(url, token, query, page, retries=4):
-    """One GET with retry on transient network errors + rate-limit backoff."""
+def _get_json(url, token, query, page, retries=4, quiet=False):
+    """One GET with retry on transient network errors + rate-limit backoff.
+
+    quiet=True suppresses HTTP-error logging (for optional endpoints that 404,
+    e.g. a repo with no releases).
+    """
     for attempt in range(1, retries + 1):
         req = urllib.request.Request(url)
         req.add_header("Accept", "application/vnd.github+json")
@@ -256,7 +268,8 @@ def _get_json(url, token, query, page, retries=4):
                 print(f"  rate limited on '{query}' p{page} -> sleeping {wait}s")
                 time.sleep(wait)
                 continue
-            print(f"  HTTP {e.code} on '{query}': {e.reason}")
+            if not quiet:
+                print(f"  HTTP {e.code} on '{query}': {e.reason}")
             return None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             wait = 5 * attempt  # transient: timeout / DNS / dropped connection
@@ -318,15 +331,16 @@ def snapshot(conn, repos_by_id, today):
     for r in repos_by_id.values():
         conn.execute(
             """INSERT INTO repos(repo_id,full_name,html_url,description,
-                created_at,language,topics,last_stars)
-               VALUES(?,?,?,?,?,?,?,?)
+                created_at,language,topics,last_stars,first_seen)
+               VALUES(?,?,?,?,?,?,?,?,?)
                ON CONFLICT(repo_id) DO UPDATE SET
                  full_name=excluded.full_name, html_url=excluded.html_url,
                  description=excluded.description, created_at=excluded.created_at,
                  language=excluded.language, topics=excluded.topics,
                  last_stars=excluded.last_stars""",
             (r["repo_id"], r["full_name"], r["html_url"], r["description"],
-             r["created_at"], r["language"], ",".join(r["topics"]), r["stars"]),
+             r["created_at"], r["language"], ",".join(r["topics"]), r["stars"],
+             today),  # first_seen only set on INSERT; preserved on conflict
         )
         conn.execute(
             "INSERT OR REPLACE INTO snapshots(repo_id,day,stars) VALUES(?,?,?)",
@@ -358,7 +372,8 @@ def growth(conn, today, ref_day, limit):
         return []
     rows = conn.execute(
         """SELECT r.full_name, r.html_url, r.description, r.created_at,
-                  r.language, t.stars AS now, y.stars AS was, t.stars - y.stars AS delta
+                  r.language, t.stars AS now, y.stars AS was,
+                  t.stars - y.stars AS delta, r.topics
            FROM snapshots t
            JOIN snapshots y ON y.repo_id = t.repo_id AND y.day = ?
            JOIN repos r ON r.repo_id = t.repo_id
@@ -368,7 +383,167 @@ def growth(conn, today, ref_day, limit):
     ).fetchall()
     return [dict(zip(
         ["full_name", "html_url", "description", "created_at",
-         "language", "stars", "was", "delta"], row)) for row in rows]
+         "language", "stars", "was", "delta", "topics"], row)) for row in rows]
+
+
+# ------------------------------------------------------- signal / discovery
+def _topics_list(r):
+    t = r.get("topics") or []
+    if isinstance(t, str):
+        t = [x for x in t.split(",") if x]
+    return t
+
+
+def is_noise(r, cfg):
+    """True for awesome-lists / curated-list repos (not runnable tools)."""
+    if not cfg.get("filter_noise", True):
+        return False
+    excl = set(cfg.get("exclude_topics", DEFAULT_EXCLUDE_TOPICS))
+    if excl & set(_topics_list(r)):
+        return True
+    name = r["full_name"].split("/")[-1].lower()
+    if name.startswith("awesome-") or name == "awesome":
+        return True
+    desc = (r.get("description") or "").lower()
+    return "awesome list" in desc or "curated list" in desc
+
+
+def drop_noise(repos, cfg, limit=None):
+    out = [r for r in repos if not is_noise(r, cfg)]
+    return out[:limit] if limit else out
+
+
+def age_days(created_at, today):
+    try:
+        c = datetime.strptime((created_at or "")[:10], "%Y-%m-%d").date()
+        t = datetime.strptime(today, "%Y-%m-%d").date()
+        return max((t - c).days, 1)
+    except ValueError:
+        return 1
+
+
+def add_momentum(repos, today):
+    """Stars per day since creation — a velocity proxy that needs no history."""
+    for r in repos:
+        r["momentum"] = round(r["stars"] / age_days(r["created_at"], today))
+    return repos
+
+
+def rank_trending(repos, cfg, today, limit):
+    repos = drop_noise(list(repos), cfg)
+    add_momentum(repos, today)
+    key = "momentum" if cfg.get("trending_rank", "momentum") == "momentum" else "stars"
+    repos.sort(key=lambda r: r.get(key, 0), reverse=True)
+    return repos[:limit]
+
+
+def gh_repo(full_name, token):
+    """Fetch one repo as a search-item-shaped object (for the watchlist)."""
+    d = _get_json(REPO_API + full_name, token, full_name, 1, quiet=True)
+    return d if d and "id" in d else None
+
+
+def readme_excerpt(md, n=500):
+    """First bit of prose from a README, badges/headings/html stripped."""
+    kept = []
+    for ln in md.splitlines():
+        s = ln.strip()
+        # skip blanks, headings, quotes, lists, tables, code fences, badges, html
+        if (not s or s[0] in "#>-*|`" or s.startswith("![")
+                or s.startswith("[!") or s.startswith("<")):
+            continue
+        kept.append(s)
+        if sum(len(x) for x in kept) > n:
+            break
+    text = " ".join(" ".join(kept).split()).replace("|", "/")
+    return (text[: n - 1] + "…") if len(text) > n else text
+
+
+def enrich(full_name, token):
+    """Extra repo detail for its note. Best-effort; missing pieces stay None."""
+    out = {k: None for k in ("pushed_at", "open_issues", "forks",
+                             "license", "homepage", "release", "release_date", "readme")}
+    d = _get_json(REPO_API + full_name, token, full_name, 1, quiet=True)
+    if d:
+        out["pushed_at"] = (d.get("pushed_at") or "")[:10] or None
+        out["open_issues"] = d.get("open_issues_count")
+        out["forks"] = d.get("forks_count")
+        lic = (d.get("license") or {}).get("spdx_id")
+        out["license"] = lic if lic and lic != "NOASSERTION" else None
+        out["homepage"] = (d.get("homepage") or "").strip() or None
+    rel = _get_json(REPO_API + full_name + "/releases/latest", token, full_name, 1, quiet=True)
+    if rel:
+        out["release"] = rel.get("tag_name")
+        out["release_date"] = (rel.get("published_at") or "")[:10] or None
+    rm = _get_json(REPO_API + full_name + "/readme", token, full_name, 1, quiet=True)
+    if rm and rm.get("content"):
+        try:
+            out["readme"] = readme_excerpt(
+                base64.b64decode(rm["content"]).decode("utf-8", "replace"))
+        except (ValueError, UnicodeError):
+            pass
+    return out
+
+
+def new_today(conn, today, limit, cfg):
+    """Repos that entered tracking today (new on radar), top by stars."""
+    rows = conn.execute(
+        "SELECT r.full_name, r.html_url, r.description, r.created_at, r.language,"
+        "       s.stars, r.topics"
+        "  FROM repos r JOIN snapshots s ON s.repo_id=r.repo_id AND s.day=?"
+        " WHERE r.first_seen=?",
+        (today, today),
+    ).fetchall()
+    cols = ["full_name", "html_url", "description", "created_at", "language", "stars", "topics"]
+    repos = drop_noise([dict(zip(cols, row)) for row in rows], cfg)
+    add_momentum(repos, today)
+    repos.sort(key=lambda r: r["stars"], reverse=True)
+    return repos[:limit]
+
+
+def breakouts(conn, today, ref_day, min_delta, min_age_days, limit, cfg):
+    """OLD repos suddenly gaining a lot of stars (created long ago, moving now)."""
+    if ref_day is None:
+        return []
+    rows = conn.execute(
+        """SELECT r.full_name, r.html_url, r.description, r.created_at, r.language,
+                  t.stars, t.stars - y.stars AS delta, r.topics
+           FROM snapshots t
+           JOIN snapshots y ON y.repo_id=t.repo_id AND y.day=?
+           JOIN repos r ON r.repo_id=t.repo_id
+           WHERE t.day=? AND (t.stars - y.stars) >= ?
+           ORDER BY delta DESC""",
+        (ref_day, today, min_delta),
+    ).fetchall()
+    cols = ["full_name", "html_url", "description", "created_at", "language", "stars", "delta", "topics"]
+    out = []
+    for row in rows:
+        r = dict(zip(cols, row))
+        if is_noise(r, cfg) or age_days(r["created_at"], today) < min_age_days:
+            continue
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def sparkline_svg(values, w=280, h=38):
+    """Tiny inline SVG trend line from a repo's star history (>=2 points)."""
+    if len(values) < 2:
+        return ""
+    lo, hi = min(values), max(values)
+    rng = (hi - lo) or 1
+    n = len(values)
+    pts = [f"{round(i*(w-4)/(n-1)+2,1)},{round(h-3-(v-lo)*(h-6)/rng,1)}"
+           for i, v in enumerate(values)]
+    lx, ly = pts[-1].split(",")
+    return (
+        f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
+        f'xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
+        f'<polyline points="{" ".join(pts)}" fill="none" stroke="#d9a441" '
+        f'stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>'
+        f'<circle cx="{lx}" cy="{ly}" r="2.4" fill="#d9a441"/></svg>'
+    )
 
 
 # ------------------------------------------------------------------- markdown
@@ -387,15 +562,17 @@ def trunc(text, n=140):
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def trending_table(repos):
+def trending_table(repos, empty="_No new repos in this window._\n"):
     if not repos:
-        return "_No new repos in this window._\n"
-    # uniform 7-col shape (Δ blank here) so CSS column coloring matches growth tables
-    lines = ["| # | Repo | Stars | Δ | Lang | Created | What it is |",
+        return empty
+    # uniform 7-col shape so CSS column coloring matches growth tables;
+    # col4 carries star/day momentum here (blank stays blank if unknown)
+    lines = ["| # | Repo | Stars | ★/day | Lang | Created | What it is |",
              "|--:|------|------:|--:|------|---------|------------|"]
     for i, r in enumerate(repos, 1):
+        mom = f"~{r['momentum']}/d" if r.get("momentum") else ""
         lines.append(
-            f"| {i} | {wikilink(r['full_name'])} | {r['stars']} |  | "
+            f"| {i} | {wikilink(r['full_name'])} | {r['stars']} | {mom} | "
             f"{r['language'] or '—'} | {r['created_at']} | {trunc(r['description'])} |"
         )
     return "\n".join(lines) + "\n"
@@ -415,23 +592,30 @@ def growth_table(repos):
     return "\n".join(lines) + "\n"
 
 
-def write_daily_note(base, today, week, month, g24, g30):
+def write_daily_note(base, today, d):
+    """d holds the section lists: week, month, g24, g30, new, breakout, watch."""
     daily_dir = os.path.join(base, "Daily")
     os.makedirs(daily_dir, exist_ok=True)
     path = os.path.join(daily_dir, f"{today}.md")
-    body = (
+    parts = [
         f"---\ncssclasses: [ai-digest]\ntype: ai-repo-digest\ndate: {today}\n"
-        f"tags: [ai-repos, digest]\n---\n\n"
-        f"# AI GitHub Repos · {today}\n\n"
-        f"## Trending · created this week\n\n{trending_table(week)}\n"
-        f"## Trending · created this month\n\n{trending_table(month)}\n"
-        f"## Fastest growing · last 24 hours\n\n{growth_table(g24)}\n"
-        f"## Fastest growing · last 30 days\n\n{growth_table(g30)}\n"
-        f"---\n*Generated by personal-ai-repo-tracker · "
-        f"{datetime.now().strftime('%Y-%m-%d %H:%M')}*\n"
-    )
+        f"tags: [ai-repos, digest]\n---\n\n",
+        f"# AI GitHub Repos · {today}\n\n",
+    ]
+    if d.get("new"):
+        parts.append(f"## New on radar\n\n{trending_table(d['new'])}\n")
+    if d.get("breakout"):
+        parts.append(f"## Breakouts · old repos taking off\n\n{growth_table(d['breakout'])}\n")
+    parts.append(f"## Trending · created this week\n\n{trending_table(d['week'])}\n")
+    parts.append(f"## Trending · created this month\n\n{trending_table(d['month'])}\n")
+    parts.append(f"## Fastest growing · last 24 hours\n\n{growth_table(d['g24'])}\n")
+    parts.append(f"## Fastest growing · last 30 days\n\n{growth_table(d['g30'])}\n")
+    if d.get("watch"):
+        parts.append(f"## Watchlist\n\n{trending_table(d['watch'], empty=EMPTY_WATCH)}\n")
+    parts.append(f"---\n*Generated by personal-ai-repo-tracker · "
+                 f"{datetime.now().strftime('%Y-%m-%d %H:%M')}*\n")
     with open(path, "w", encoding="utf-8") as f:
-        f.write(body)
+        f.write("".join(parts))
     return path
 
 
@@ -468,7 +652,7 @@ def maybe_claude_summary(daily_path, cfg):
         print(f"  summary step skipped: {e}")
 
 
-def write_repo_note(conn, base, r, today):
+def write_repo_note(conn, base, r, today, extra=None, sparkline=True):
     repo_dir = os.path.join(base, "Repos")
     os.makedirs(repo_dir, exist_ok=True)
     full_name = r["full_name"]
@@ -476,16 +660,39 @@ def write_repo_note(conn, base, r, today):
 
     hist = conn.execute(
         "SELECT day, stars FROM snapshots WHERE repo_id="
-        "(SELECT repo_id FROM repos WHERE full_name=?) ORDER BY day DESC LIMIT 14",
+        "(SELECT repo_id FROM repos WHERE full_name=?) ORDER BY day DESC LIMIT 30",
         (full_name,),
     ).fetchall()
     hist_tbl = "| Day | Stars |\n|-----|------:|\n" + "\n".join(
-        f"| {d} | {s} |" for d, s in hist
+        f"| {d} | {s} |" for d, s in hist[:14]
     )
-    topics = r.get("topics")
-    if isinstance(topics, str):
-        topics = [t for t in topics.split(",") if t]
-    topics = topics or []
+    spark = sparkline_svg([s for _, s in reversed(hist)]) if sparkline else ""
+    spark_block = f"{spark}\n\n" if spark else ""
+
+    topics = _topics_list(r)
+
+    # enrichment stat line + release + homepage + readme (all optional)
+    meta_bits = []
+    if extra:
+        if extra.get("pushed_at"):
+            meta_bits.append(f"last push {extra['pushed_at']}")
+        if extra.get("open_issues") is not None:
+            meta_bits.append(f"{extra['open_issues']} open issues")
+        if extra.get("forks") is not None:
+            meta_bits.append(f"{extra['forks']} forks")
+        if extra.get("license"):
+            meta_bits.append(extra["license"])
+    meta_line = ("  ·  ".join(meta_bits) + "\n\n") if meta_bits else ""
+    rel_line = ""
+    if extra and extra.get("release"):
+        rd = f" · {extra['release_date']}" if extra.get("release_date") else ""
+        rel_line = f"Latest release — **{extra['release']}**{rd}\n\n"
+    links = f"[Open on GitHub →]({r['html_url']})"
+    if extra and extra.get("homepage"):
+        links += f" · [Homepage →]({extra['homepage']})"
+    links += "\n\n"
+    readme_block = (f"## README\n\n> {extra['readme']}\n\n"
+                    if extra and extra.get("readme") else "")
 
     body = (
         f"---\ncssclasses: [ai-repo]\nrepo: {full_name}\nurl: {r['html_url']}\n"
@@ -495,12 +702,83 @@ def write_repo_note(conn, base, r, today):
         f"# {full_name}\n\n"
         f"> {trunc(r['description'], 400) or 'no description'}\n\n"
         f"**★ {r.get('stars', '?')}**  ·  {r['language'] or '—'}  ·  created {r['created_at']}\n\n"
-        f"[Open on GitHub →]({r['html_url']})\n\n"
+        + meta_line
+        + rel_line
+        + links
         + (f"Topics — {' · '.join(topics)}\n\n" if topics else "")
-        + f"## Star history (last 14 snapshots)\n\n{hist_tbl}\n"
+        + readme_block
+        + f"## Star history\n\n{spark_block}{hist_tbl}\n"
     )
     with open(path, "w", encoding="utf-8") as f:
         f.write(body)
+
+
+def week_key(today):
+    iso = datetime.strptime(today, "%Y-%m-%d").date().isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def write_weekly_note(base, conn, today, cfg):
+    """Rolling week-in-review: biggest 7-day gainers + this week's new entrants."""
+    week_dir = os.path.join(base, "Weekly")
+    os.makedirs(week_dir, exist_ok=True)
+    key = week_key(today)
+    ref7 = reference_day(conn, today, 7)
+    gainers = drop_noise(growth(conn, today, ref7, 30), cfg, 15)
+
+    wk = (datetime.strptime(today, "%Y-%m-%d").date() - timedelta(days=7)).isoformat()
+    rows = conn.execute(
+        "SELECT r.full_name, r.html_url, r.description, r.created_at, r.language,"
+        "       s.stars, r.topics"
+        "  FROM repos r JOIN snapshots s ON s.repo_id=r.repo_id AND s.day=?"
+        " WHERE r.first_seen>=? ORDER BY s.stars DESC LIMIT 30",
+        (today, wk),
+    ).fetchall()
+    cols = ["full_name", "html_url", "description", "created_at", "language", "stars", "topics"]
+    entrants = drop_noise([dict(zip(cols, row)) for row in rows], cfg, 15)
+    add_momentum(entrants, today)
+
+    body = (
+        f"---\ncssclasses: [ai-digest]\ntype: ai-weekly\nweek: {key}\n"
+        f"tags: [ai-repos, weekly]\n---\n\n"
+        f"# AI Repos · week {key}\n\n"
+        f"## Biggest gainers this week\n\n{growth_table(gainers)}\n"
+        f"## New entrants this week\n\n{trending_table(entrants)}\n"
+        f"---\n*Rebuilt each run through the week · {today}*\n"
+    )
+    path = os.path.join(week_dir, f"{key}.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body)
+    return path
+
+
+def write_home_note(base, conn, today, watch, cfg):
+    """A map-of-content home note: latest links + top tracked + recent days."""
+    rows = conn.execute(
+        "SELECT full_name, html_url, description, created_at, language, last_stars, topics"
+        "  FROM repos ORDER BY last_stars DESC LIMIT 30"
+    ).fetchall()
+    cols = ["full_name", "html_url", "description", "created_at", "language", "stars", "topics"]
+    top = drop_noise([dict(zip(cols, row)) for row in rows], cfg, 15)
+    add_momentum(top, today)
+    days = [d for (d,) in conn.execute(
+        "SELECT DISTINCT day FROM snapshots ORDER BY day DESC LIMIT 14").fetchall()]
+    daily_links = "\n".join(f"- [[{d}]]" for d in days) or "_none yet_"
+
+    parts = [
+        f"---\ncssclasses: [ai-digest]\ntype: ai-home\ntags: [ai-repos, home]\n---\n\n",
+        f"# AI Repos · Home\n\n",
+        f"Latest digest: [[{today}]]  ·  This week: [[{week_key(today)}]]\n\n",
+        f"## Top tracked · all-time by stars\n\n{trending_table(top)}\n",
+    ]
+    if watch:
+        parts.append(f"## Watchlist\n\n{trending_table(watch, empty=EMPTY_WATCH)}\n")
+    parts.append(f"## Recent daily digests\n\n{daily_links}\n\n")
+    parts.append(f"---\n*Updated {today}*\n")
+    path = os.path.join(base, "Home.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("".join(parts))
+    return path
 
 
 # ----------------------------------------------------------------------- main
@@ -534,33 +812,59 @@ def run():
             gh_search(f"topic:{t} stars:>={min_uni}", token, pages=uni_pages)
         )
 
-    week = sorted(merge_by_id(week_lists).values(),
-                  key=lambda r: r["stars"], reverse=True)[: cfg["trending_week_count"]]
-    month = sorted(merge_by_id(month_lists).values(),
-                   key=lambda r: r["stars"], reverse=True)[: cfg["trending_month_count"]]
+    week = rank_trending(merge_by_id(week_lists).values(), cfg, today, cfg["trending_week_count"])
+    month = rank_trending(merge_by_id(month_lists).values(), cfg, today, cfg["trending_month_count"])
 
-    # 2) snapshot the universe + trending repos so growth can be diffed over time
-    universe = merge_by_id(universe_lists + week_lists + month_lists)
+    # watchlist repos, fetched individually so they're always tracked
+    watch_items = []
+    for fn in cfg.get("watchlist", []):
+        obj = gh_repo(fn, token)
+        if obj:
+            watch_items.append(obj)
+        else:
+            print(f"  watchlist: could not fetch {fn}")
+
+    # 2) snapshot universe + trending + watchlist so growth can be diffed over time
+    universe = merge_by_id(universe_lists + week_lists + month_lists + [watch_items])
     print(f"Snapshotting {len(universe)} repos for {today}...")
     snapshot(conn, universe, today)
 
-    # 3) growth lists from snapshot history
+    # 3) growth + discovery from snapshot history (noise-filtered)
     ref24 = reference_day(conn, today, 1)
     ref30 = reference_day(conn, today, 30)
-    g24 = growth(conn, today, ref24, cfg["growth_24h_count"])
-    g30 = growth(conn, today, ref30, cfg["growth_30d_count"])
-    print(f"  24h ref day: {ref24} ({len(g24)} growers) | "
-          f"30d ref day: {ref30} ({len(g30)} growers)")
+    g24 = drop_noise(growth(conn, today, ref24, cfg["growth_24h_count"] * 3), cfg, cfg["growth_24h_count"])
+    g30 = drop_noise(growth(conn, today, ref30, cfg["growth_30d_count"] * 3), cfg, cfg["growth_30d_count"])
+    new = new_today(conn, today, cfg.get("new_on_radar_count", 10), cfg)
+    brk = breakouts(conn, today, ref24, cfg.get("breakout_min_delta", 200),
+                    cfg.get("breakout_min_age_days", 45), cfg.get("breakout_count", 10), cfg)
+    watch = add_momentum([normalize(o) for o in watch_items], today)
+    print(f"  24h ref: {ref24} ({len(g24)}) | 30d ref: {ref30} ({len(g30)}) | "
+          f"new: {len(new)} | breakouts: {len(brk)} | watch: {len(watch)}")
 
-    # 4) write vault notes (daily dashboard + one note per surfaced repo)
-    daily_path = write_daily_note(base, today, week, month, g24, g30)
-    surfaced = {r["full_name"]: r for r in (week + month + g24 + g30)}
+    # 4) dashboard + weekly rollup + home MOC
+    data = {"week": week, "month": month, "g24": g24, "g30": g30,
+            "new": new, "breakout": brk, "watch": watch}
+    daily_path = write_daily_note(base, today, data)
+    if cfg.get("weekly_note", True):
+        write_weekly_note(base, conn, today, cfg)
+    if cfg.get("home_note", True):
+        write_home_note(base, conn, today, watch, cfg)
+
+    # 5) one enriched note per surfaced repo
+    surfaced = {}
+    for r in (new + brk + week + month + g24 + g30 + watch):
+        surfaced.setdefault(r["full_name"], r)
+    enrich_on = cfg.get("enrich_repo_notes", True)
+    spark_on = cfg.get("sparklines", True)
+    if enrich_on:
+        print(f"Enriching {len(surfaced)} repo notes...")
     for r in surfaced.values():
-        write_repo_note(conn, base, r, today)
+        extra = enrich(r["full_name"], token) if enrich_on else None
+        write_repo_note(conn, base, r, today, extra, spark_on)
 
     conn.close()
     maybe_claude_summary(daily_path, cfg)
-    print(f"\nDone. {len(surfaced)} repo notes + daily dashboard:\n  {daily_path}")
+    print(f"\nDone. {len(surfaced)} repo notes + dashboard + weekly + home:\n  {daily_path}")
 
 
 # ----------------------------------------------------------------- self-check
@@ -592,6 +896,13 @@ def selftest():
     names = [r["full_name"] for r in g]
     assert names == ["a/fast", "b/slow"], names          # flat + new excluded, sorted by delta
     assert g[0]["delta"] == 300 and g[1]["delta"] == 10, g
+
+    # signal helpers
+    assert is_noise({"full_name": "x/awesome-ai", "topics": [], "description": ""}, {})
+    assert not is_noise({"full_name": "x/tool", "topics": ["ai"], "description": "a tool"}, {})
+    mom = add_momentum([{"full_name": "a/b", "stars": 300, "created_at": "2026-06-27"}], "2026-06-30")
+    assert mom[0]["momentum"] == 100, mom                 # 300 stars / 3 days
+    assert sparkline_svg([1, 5, 3]).startswith("<svg") and sparkline_svg([1]) == ""
     print("selftest OK")
 
 

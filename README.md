@@ -14,15 +14,20 @@ Every morning, in `<vault>/AI Repos/`:
 
 | Note | Contents |
 |------|----------|
-| `Daily/YYYY-MM-DD.md` | Dashboard with 4 ranked tables (below) + a Claude `## TL;DR — video ideas` section |
-| `Repos/owner__name.md` | One note per surfaced repo: description, GitHub link, topics, and a growing star-history table |
+| `Daily/YYYY-MM-DD.md` | Dashboard with the ranked tables below + a Claude `## TL;DR — video ideas` section |
+| `Repos/owner__name.md` | Per-repo note: description, **enrichment** (last push, open issues, forks, license, latest release, homepage), README excerpt, a star-history **sparkline**, and the history table |
+| `Weekly/YYYY-Www.md` | Rolling week-in-review: biggest 7-day gainers + this week's new entrants |
+| `Home.md` | Map-of-content: links to the latest digest + week, top-tracked all-time, watchlist, and recent days |
 
-The dashboard's four lists:
+The dashboard's lists:
 
-- 🔥 **Top 10 trending — created this week** (by stars)
-- 📅 **Top 5 trending — created this month**
-- ⚡ **Top 10 fastest growing — last 24h** (star velocity)
-- 📈 **Top 10 fastest growing — last 30 days**
+- 🆕 **New on radar** — repos that entered tracking today
+- 🚀 **Breakouts** — *older* repos suddenly gaining stars (the "created months ago, then takes off" case)
+- 🔥 **Trending — created this week** / 📅 **this month** (ranked by star *momentum* — stars per day — so old giants don't hog the top)
+- ⚡ **Fastest growing — last 24h** / 📈 **last 30 days** (raw star velocity)
+- ⭐ **Watchlist** — repos you pin in config, always tracked
+
+Awesome-lists and other non-tool repos are filtered out by default so the lists stay full of runnable tools.
 
 Notes are wikilinked into your Obsidian graph and carry `cssclasses` so a bundled CSS snippet renders them as a dark, data-forward dashboard. **View in Reading mode (`Ctrl+E`) for the full look.**
 
@@ -120,6 +125,13 @@ self-heals from the next run.
 | `universe_per_topic` | How many top repos per topic to snapshot for growth tracking |
 | `min_stars_universe` | Floor for the snapshot universe |
 | `claude_summary` | `true` → append a Claude-written TL;DR via the local `claude` CLI |
+| `filter_noise` / `exclude_topics` | Drop awesome-lists / non-tool repos (by topic + name + description) |
+| `trending_rank` | `"momentum"` (stars/day, default) or `"stars"` (raw) for the trending lists |
+| `new_on_radar_count` / `breakout_count` | Sizes of the New-on-radar and Breakouts lists |
+| `breakout_min_delta` / `breakout_min_age_days` | A breakout = an older repo (≥ N days) gaining ≥ D stars vs the prior snapshot |
+| `watchlist` | `["owner/repo", ...]` — always fetched, snapshotted, and shown |
+| `enrich_repo_notes` | `true` → pull last-push / issues / forks / license / release / homepage / README into repo notes |
+| `weekly_note` / `home_note` / `sparklines` | Toggle the weekly rollup, the Home MOC, and per-repo sparklines |
 
 ---
 

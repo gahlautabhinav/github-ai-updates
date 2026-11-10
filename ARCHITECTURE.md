@@ -19,7 +19,7 @@
 | **Markdown renderers** | `trending_table()`, `growth_table()`, `write_daily_note()`, `write_repo_note()` | Produces the 7-column tables and frontmatter-bearing note files |
 | **Obsidian theme installer** | `ensure_obsidian_theme()` | Writes `ai-repos.css` to `.obsidian/snippets/` and enables it in `appearance.json` (preserving existing keys) |
 | **Claude summarizer** | `maybe_claude_summary()` | Optionally pipes the finished daily note to `claude -p` via stdin and appends the output as `## TL;DR — video ideas` |
-| **Self-test** | `selftest()` | In-memory SQLite fixture that verifies growth-diff + ranking correctness (`--selftest` flag) |
+| **Self-test** | `selftest()` | In-memory SQLite fixture that verifies growth-diff + ranking correctness, plus the noise filter, momentum, sparkline and token-expiry warning helpers (`--selftest` flag) |
 | **Scheduler** | `run_daily.bat` + Windows Task Scheduler | Triggers the daily run; `StartWhenAvailable` gives catch-up on missed mornings |
 
 ---
@@ -194,6 +194,7 @@ Repos with no prior snapshot are silently excluded by the inner JOIN — this is
 |---------|----------|
 | **Network error (URLError / TimeoutError / OSError)** | `_get_json()` retries up to 4 times with linear backoff (`5 × attempt` seconds). After 4 failures it returns `None`; `gh_search()` breaks its page loop and returns whatever it collected. |
 | **Rate limit (HTTP 403 / 429)** | `_get_json()` reads the `Retry-After` header (defaults to 60s) and sleeps before retrying. Counts against the same 4-attempt budget. |
+| **Invalid or expired token (HTTP 401)** | `_get_json()` calls `sys.exit` with a "token rejected" error on the first call. The run aborts before any note or snapshot is written, so a dead token cannot produce empty notes while the task reports success. |
 | **Other HTTP errors** | Logged and `None` returned; the search for that topic/page is skipped. |
 | **No GitHub token** | The script warns and continues at 60 req/hr. A large topic list will likely hit the limit; backoff will slow the run but not crash it. |
 | **growth lists empty (cold start)** | `growth()` returns `[]` when `ref_day` is `None`. `growth_table()` returns an explanatory placeholder string. The dashboard is written correctly with that placeholder. |
@@ -211,6 +212,7 @@ Repos with no prior snapshot are silently excluded by the inner JOIN — this is
 - `config.json` (which may contain the token) is gitignored. The committed template `config.example.json` contains only placeholder strings.
 - At runtime, `GITHUB_TOKEN` env var takes precedence over the config file value, allowing CI/headless environments to inject the token without writing it to disk.
 - `_get_json()` only adds the `Authorization: Bearer` header when the token is non-empty and does not start with `"PUT_YOUR"`, so a misconfigured placeholder is never sent.
+- Expiry warning: `_get_json()` records the `github-authentication-token-expiration` response header in `TOKEN_EXPIRES`. `token_warning()` puts a `[!warning]` callout at the top of the daily note and prints a `WARNING` line when 14 days or fewer remain (`TOKEN_WARN_DAYS`). Tokens with no expiry send no header, so no warning.
 - The token requires no GitHub scopes — public repository search is unauthenticated at the API level; the token only lifts the rate limit.
 
 **Local-only operation**

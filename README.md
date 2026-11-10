@@ -72,6 +72,8 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full design.
 
 `config.json`, `snapshots.db`, and the vault are gitignored — your token never leaves your machine.
 
+**Tokens expire.** When 14 days or fewer remain, the daily note shows a warning callout and `run.log` gets a `WARNING` line. If GitHub rejects the token (HTTP 401), the run stops with an error instead of writing empty notes: regenerate the token and update `github_token` in `config.json` (or `GITHUB_TOKEN`).
+
 ---
 
 ## Run it every morning (Windows Task Scheduler)
@@ -141,7 +143,7 @@ self-heals from the next run.
 py -3.10 github_ai_tracker.py --selftest
 ```
 
-Verifies the growth-diff + ranking logic on fixture data.
+Verifies the growth-diff + ranking logic and the token-expiry warning on fixture data.
 
 ---
 

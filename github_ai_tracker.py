@@ -247,6 +247,23 @@ def db_connect():
 
 
 # --------------------------------------------------------------- github calls
+TOKEN_EXPIRES = None   # raw expiry header from GitHub, e.g. "2026-12-25 09:19:36 UTC"
+TOKEN_WARN_DAYS = 14
+
+
+def token_warning(today, expires=None):
+    """Obsidian callout once the token is within TOKEN_WARN_DAYS of expiry, else ''."""
+    expires = expires or TOKEN_EXPIRES
+    if not expires:
+        return ""
+    left = (date.fromisoformat(expires[:10]) - date.fromisoformat(today)).days
+    if left > TOKEN_WARN_DAYS:
+        return ""
+    return (f"> [!warning] GitHub token expires in {left} day(s) ({expires[:10]})\n"
+            f"> Regenerate it and update `github_token` in config.json, "
+            f"or the tracker stops.\n\n")
+
+
 def _get_json(url, token, query, page, retries=4, quiet=False):
     """One GET with retry on transient network errors + rate-limit backoff.
 
@@ -261,6 +278,9 @@ def _get_json(url, token, query, page, retries=4, quiet=False):
             req.add_header("Authorization", f"Bearer {token}")
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
+                global TOKEN_EXPIRES  # header absent for tokens with no expiry
+                TOKEN_EXPIRES = (resp.headers.get(
+                    "github-authentication-token-expiration") or TOKEN_EXPIRES)
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code in (403, 429):  # rate limited (primary or secondary)
@@ -268,6 +288,12 @@ def _get_json(url, token, query, page, retries=4, quiet=False):
                 print(f"  rate limited on '{query}' p{page} -> sleeping {wait}s")
                 time.sleep(wait)
                 continue
+            if e.code == 401:
+                # A dead token fails every call; carrying on writes empty notes
+                # and an empty snapshot day while the task still reports success.
+                sys.exit("ERROR: GitHub rejected the token (401 Bad credentials) - "
+                         "it has expired or been revoked. Put a new one in "
+                         "config.json (github_token) or GITHUB_TOKEN.")
             if not quiet:
                 print(f"  HTTP {e.code} on '{query}': {e.reason}")
             return None
@@ -601,6 +627,7 @@ def write_daily_note(base, today, d):
         f"---\ncssclasses: [ai-digest]\ntype: ai-repo-digest\ndate: {today}\n"
         f"tags: [ai-repos, digest]\n---\n\n",
         f"# AI GitHub Repos · {today}\n\n",
+        token_warning(today),
     ]
     if d.get("new"):
         parts.append(f"## New on radar\n\n{trending_table(d['new'])}\n")
@@ -842,6 +869,8 @@ def run():
           f"new: {len(new)} | breakouts: {len(brk)} | watch: {len(watch)}")
 
     # 4) dashboard + weekly rollup + home MOC
+    if token_warning(today):
+        print("  WARNING: " + token_warning(today).splitlines()[0][13:])
     data = {"week": week, "month": month, "g24": g24, "g30": g30,
             "new": new, "breakout": brk, "watch": watch}
     daily_path = write_daily_note(base, today, data)
@@ -903,6 +932,10 @@ def selftest():
     mom = add_momentum([{"full_name": "a/b", "stars": 300, "created_at": "2026-06-27"}], "2026-06-30")
     assert mom[0]["momentum"] == 100, mom                 # 300 stars / 3 days
     assert sparkline_svg([1, 5, 3]).startswith("<svg") and sparkline_svg([1]) == ""
+    # token expiry warning: silent when far off or no expiry, loud inside the window
+    assert token_warning("2026-11-10", None) == ""
+    assert token_warning("2026-11-10", "2026-12-25 09:19:36 UTC") == ""
+    assert "expires in 5 day(s)" in token_warning("2026-11-10", "2026-11-15 09:19:36 UTC")
     print("selftest OK")
 
 
